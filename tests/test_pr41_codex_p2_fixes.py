@@ -487,6 +487,30 @@ class DefaultModelStandardMigrationTests(unittest.TestCase):
         self.assertEqual(cfg["automation_front_expand_mode"], "document_3x4")
         self.assertEqual(cfg["automation_selfie_expand_mode"], "percent")
 
+    def test_stale_expand_percentage_default_migrates_once_to_35(self):
+        cfg = self._migrate({"outpaint_expand_percentage": 30})
+        self.assertEqual(cfg["outpaint_expand_percentage"], 35)
+        self.assertTrue(cfg["expand_3x4_pct_migrated_v248"])
+
+    def test_missing_expand_percentage_default_migrates_to_35(self):
+        cfg = self._migrate({})
+        self.assertEqual(cfg["outpaint_expand_percentage"], 35)
+        self.assertTrue(cfg["expand_3x4_pct_migrated_v248"])
+
+    def test_expand_percentage_migration_does_not_override_after_flag(self):
+        cfg = self._migrate(
+            {
+                "outpaint_expand_percentage": 30,
+                "expand_3x4_pct_migrated_v248": True,
+            }
+        )
+        self.assertEqual(cfg["outpaint_expand_percentage"], 30)
+
+    def test_expand_percentage_migration_preserves_non_default_choice(self):
+        cfg = self._migrate({"outpaint_expand_percentage": 42})
+        self.assertEqual(cfg["outpaint_expand_percentage"], 42)
+        self.assertTrue(cfg["expand_3x4_pct_migrated_v248"])
+
 
 class GetModelDisplayNamePricingTests(unittest.TestCase):
     """get_model_display_name pricing priority: live pricing_info ->

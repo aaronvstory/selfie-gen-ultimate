@@ -20,6 +20,7 @@ from datetime import datetime
 from api_keys import API_KEY_SPECS, apply_env_key_fallback, ensure_key_fields, env_key_optout_list, key_status, non_required_missing_specs
 from app_version import RELEASE_VERSION
 from automation.config import get_outpaint_fal_timeout_seconds
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 from tk_dialogs import select_directory, select_open_files
 
@@ -1935,6 +1936,14 @@ class KlingGUIWindow:
             if config.get("automation_selfie_expand_mode") == "percent":
                 config["automation_selfie_expand_mode"] = "three_four_fullres"
             config["expand_3x4_modes_migrated_v247"] = True
+
+        # Step 1/0/2.5 full-res 3:4 expand default widened slightly from 30%
+        # to 35%. Migrate only missing/stale default configs; preserve any
+        # deliberate non-default value after the one-time flag.
+        if not config.get("expand_3x4_pct_migrated_v248"):
+            if config.get("outpaint_expand_percentage") in (None, 30):
+                config["outpaint_expand_percentage"] = DEFAULT_OUTPAINT_EXPAND_PERCENT
+            config["expand_3x4_pct_migrated_v248"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template

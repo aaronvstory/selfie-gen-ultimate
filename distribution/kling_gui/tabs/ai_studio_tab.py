@@ -30,6 +30,7 @@ from ..theme import (
 )
 from ..image_state import ImageSession
 from log_utils import format_exception_detail
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 from path_utils import get_gen_images_folder
 
 # PIL for canvas thumbnails (mirrors face_crop_tab/compare_panel guarded import).
@@ -148,6 +149,7 @@ class AIStudioTab(tk.Frame):
         self._before_photo = None  # retain to prevent GC
         self._after_photo = None  # retain to prevent GC
         self._last_similarity: Optional[str] = None
+        self._auto_added_carousel_path: Optional[str] = None
 
         # Models (the 3 editing endpoints live in models.json / AVAILABLE_MODELS).
         from selfie_generator import SelfieGenerator
@@ -529,6 +531,7 @@ class AIStudioTab(tk.Frame):
         self._after_path = None
         self._after_pil = None
         self._after_photo = None
+        self._auto_added_carousel_path = None
         self._after_canvas.delete("all")
         self._after_caption.config(text="After (run an edit)")
         self._add_btn.config(state=tk.DISABLED)
@@ -598,7 +601,7 @@ class AIStudioTab(tk.Frame):
         try:
             output_folder = get_gen_images_folder(image_path)
             os.makedirs(output_folder, exist_ok=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — keep edit result visible if carousel mutation fails
             self.log(f"Could not resolve output folder: {exc}", "error")
             return
 
@@ -682,11 +685,14 @@ class AIStudioTab(tk.Frame):
         try:
             output_folder = get_gen_images_folder(image_path)
             os.makedirs(output_folder, exist_ok=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — manual Add should log, not crash the UI
             self.log(f"Could not resolve output folder: {exc}", "error")
             return
 
-        pct = int(cfg.get("outpaint_expand_percentage", 30) or 30)
+        pct = int(
+            cfg.get("outpaint_expand_percentage", DEFAULT_OUTPAINT_EXPAND_PERCENT)
+            or DEFAULT_OUTPAINT_EXPAND_PERCENT
+        )
         prompt = self.config.get("outpaint_prompt", "") or ""
         self._set_busy(True)
         self._abort_event = threading.Event()
@@ -776,6 +782,12 @@ class AIStudioTab(tk.Frame):
         self.log(
             f"Edit complete: {os.path.basename(result_path)}", "success"
         )
+        try:
+            self._add_result_to_carousel(auto=True)
+        except Exception as exc:
+            self._auto_added_carousel_path = None
+            self._add_btn.config(state=tk.NORMAL)
+            self.log(f"Auto-add to carousel failed: {exc}", "warning")
 
     def _on_run_error(self, error: str):
         self._set_busy(False)
@@ -815,7 +827,24 @@ class AIStudioTab(tk.Frame):
     # ── Result actions ────────────────────────────────────────────────
 
     def _on_add_to_carousel(self):
+        try:
+            self._add_result_to_carousel(auto=False)
+        except Exception as exc:
+            self._auto_added_carousel_path = None
+            self._add_btn.config(state=tk.NORMAL)
+            self.log(f"Add to carousel failed: {exc}", "warning")
+
+    def _add_result_to_carousel(self, auto: bool = False):
         if not (self._after_path and os.path.isfile(self._after_path)):
+            self.log("Add to carousel skipped: result file is missing.", "warning")
+            return
+        if self._auto_added_carousel_path == self._after_path:
+            if not auto:
+                self.log(
+                    f"Already added to carousel: {os.path.basename(self._after_path)}",
+                    "info",
+                )
+            self._add_btn.config(state=tk.DISABLED)
             return
         # add_image(make_active=True) makes the result the active carousel
         # image, which fires _on_session_change. Pre-record it as already-synced
@@ -828,6 +857,8 @@ class AIStudioTab(tk.Frame):
             make_active=True,
             similarity=self._last_similarity,
         )
+        self._auto_added_carousel_path = self._after_path
+        self._add_btn.config(state=tk.DISABLED)
         self.log(
             f"Added to carousel: {os.path.basename(self._after_path)}",
             "success",

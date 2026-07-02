@@ -62,3 +62,13 @@ def test_step0_expand_modes_are_vertical_not_in_action_row():
     assert "btn_row," not in mode_block
     assert "3:4 Full-res (recommended)" in mode_block
     assert "% Full-res (same ratio)" in mode_block
+
+
+def test_outpaint_percentage_presets_mark_35_as_default():
+    for path in (
+        Path("kling_gui/tabs/outpaint_tab.py"),
+        Path("distribution/kling_gui/tabs/outpaint_tab.py"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "DEFAULT_OUTPAINT_EXPAND_PERCENT" in text
+        assert "30% (default)" not in text
