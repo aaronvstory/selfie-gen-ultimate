@@ -3279,6 +3279,7 @@ class FaceCropTab(tk.Frame):
                         from outpaint_geometry import (
                             compute_full_res_expand_plan,
                             compute_provider_caps,
+                            resolve_border_strategy,
                         )
                         from PIL import Image as _PILImg, ImageOps as _PILOps
                         with _PILImg.open(current_input) as _im:
@@ -3287,6 +3288,9 @@ class FaceCropTab(tk.Frame):
                             _iw, _ih, fullres_pct,
                             compute_provider_caps("bfl" if use_bfl else "fal"),
                             fullres_aspect,
+                        )
+                        _fr_kwargs["border_strategy"] = resolve_border_strategy(
+                            cfg, bool(api_key)
                         )
                     result = gen.outpaint(
                         image_path=current_input,

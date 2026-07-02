@@ -884,6 +884,7 @@ class ExpandTab(tk.Frame):
                         from outpaint_geometry import (
                             compute_full_res_expand_plan,
                             compute_provider_caps,
+                            resolve_border_strategy,
                         )
                         from PIL import Image as _PILImg, ImageOps as _PILOps
                         with _PILImg.open(entry.path) as _im:
@@ -892,6 +893,9 @@ class ExpandTab(tk.Frame):
                             _iw, _ih, pct_value,
                             compute_provider_caps("bfl" if use_bfl else "fal"),
                             fullres_aspect,
+                        )
+                        _fr_kwargs["border_strategy"] = resolve_border_strategy(
+                            cfg, bool(api_key)
                         )
                     else:
                         left, right, top, bottom = self._build_expand_margins(

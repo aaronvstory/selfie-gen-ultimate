@@ -438,6 +438,7 @@ class OutpaintTab(tk.Frame):
         has_bfl = bool(self.get_config().get("bfl_api_key"))
         expand_left = expand_right = expand_top = expand_bottom = 0
         full_res_plan = None
+        full_res_strategy = "edge_extend"
 
         if mode in ("percentage_fullres", "three_four_fullres"):
             try:
@@ -449,6 +450,7 @@ class OutpaintTab(tk.Frame):
                 from outpaint_geometry import (
                     compute_full_res_expand_plan,
                     compute_provider_caps,
+                    resolve_border_strategy,
                 )
                 from PIL import Image as _PILImg, ImageOps as _PILOps
                 with _PILImg.open(image_path) as _im:
@@ -457,6 +459,9 @@ class OutpaintTab(tk.Frame):
                     _iw, _ih, pct,
                     compute_provider_caps("bfl" if has_bfl else "fal"),
                     (3, 4) if mode == "three_four_fullres" else None,
+                )
+                full_res_strategy = resolve_border_strategy(
+                    self.get_config(), bool(api_key)
                 )
             except (OSError, ValueError) as e:
                 # OSError: image can't be opened/decoded; ValueError: bad
@@ -532,6 +537,7 @@ class OutpaintTab(tk.Frame):
                     composite_mode=composite_mode,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.get_config()),
                     full_res_plan=full_res_plan,
+                    border_strategy=full_res_strategy,
                 )
 
                 # Compute face similarity against original portrait

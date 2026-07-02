@@ -12,7 +12,23 @@ from outpaint_geometry import (
     FAL_CAPS,
     BFL_CAPS,
     compute_full_res_expand_plan,
+    resolve_border_strategy,
 )
+
+
+def test_resolve_border_strategy():
+    # default: bria when a fal key exists, edge_extend without one
+    assert resolve_border_strategy(None, True) == "bria"
+    assert resolve_border_strategy(None, False) == "edge_extend"
+    assert resolve_border_strategy({}, True) == "bria"
+    # explicit config wins
+    assert resolve_border_strategy({"outpaint_border_strategy": "edge_extend"}, True) == "edge_extend"
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, True) == "bria"
+    # bria/ai need a fal key -> fall back to free engine without one
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, False) == "edge_extend"
+    assert resolve_border_strategy({"outpaint_border_strategy": "ai"}, False) == "edge_extend"
+    # unknown value -> default logic
+    assert resolve_border_strategy({"outpaint_border_strategy": "xyz"}, True) == "bria"
 
 
 # ── geometry ─────────────────────────────────────────────────────────────

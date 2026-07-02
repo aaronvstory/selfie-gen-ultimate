@@ -43,6 +43,7 @@ from outpaint_geometry import (
     compute_percent_expand_plan,
     compute_provider_caps,
     compute_full_res_expand_plan,
+    resolve_border_strategy,
 )
 from outpaint_generator import OutpaintGenerator
 from selfie_generator import SelfieGenerator
@@ -585,7 +586,10 @@ class AutoPipelineRunner:
                             width, height, pct,
                             compute_provider_caps(resolved_selfie_provider),
                             branch_fullres_aspect,
-                        )
+                        ),
+                        "border_strategy": resolve_border_strategy(
+                            self.config, bool(self.config.get("falai_api_key")),
+                        ),
                     }
                 else:
                     plan = compute_percent_expand_plan(
@@ -1531,7 +1535,13 @@ class AutoPipelineRunner:
                             compute_provider_caps(resolved_front_provider),
                             front_fullres_aspect,
                         )
-                        front_expand_kwargs = {"full_res_plan": _fr_plan}
+                        front_expand_kwargs = {
+                            "full_res_plan": _fr_plan,
+                            "border_strategy": resolve_border_strategy(
+                                self.config,
+                                bool(self.config.get("falai_api_key")),
+                            ),
+                        }
                         self.logger.info(
                             "case %s front expand pass %d/%d FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
                             case_key, pass_index + 1, front_passes, _pw, _ph,
@@ -2087,7 +2097,13 @@ class AutoPipelineRunner:
                         compute_provider_caps(resolved_selfie_provider),
                         selfie_fullres_aspect,
                     )
-                    selfie_expand_kwargs = {"full_res_plan": _fr_plan}
+                    selfie_expand_kwargs = {
+                        "full_res_plan": _fr_plan,
+                        "border_strategy": resolve_border_strategy(
+                            self.config,
+                            bool(self.config.get("falai_api_key")),
+                        ),
+                    }
                     self.logger.info(
                         "case %s selfie expand FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
                         case_key, width, height, pct, selfie_fullres_aspect, _fr_plan,

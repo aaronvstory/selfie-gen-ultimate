@@ -71,6 +71,25 @@ def compute_percent_expand_plan(
     }
 
 
+def resolve_border_strategy(config: Optional[dict], has_fal_key: bool) -> str:
+    """Pick the full-res border engine.
+
+    ``config['outpaint_border_strategy']`` wins if set to a known value
+    ("bria" | "edge_extend" | "ai"). Otherwise default to "bria" (best quality)
+    when a fal key is available, else "edge_extend" (free, offline, no key).
+    """
+    known = {"bria", "edge_extend", "ai"}
+    val = ""
+    if isinstance(config, dict):
+        val = str(config.get("outpaint_border_strategy", "") or "").strip().lower()
+    if val in known:
+        # "bria"/"ai" need a fal key; fall back to the free engine without one.
+        if val in {"bria", "ai"} and not has_fal_key:
+            return "edge_extend"
+        return val
+    return "bria" if has_fal_key else "edge_extend"
+
+
 def compute_full_res_expand_plan(
     orig_w: int,
     orig_h: int,
