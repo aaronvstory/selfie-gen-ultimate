@@ -416,27 +416,46 @@ class AIStudioTab(tk.Frame):
         )
         self._abort_btn.pack(side=tk.LEFT, padx=(4, 0))
 
-        # Expand to 3:4 (full-res): the same generative-expand feature as Step 0
-        # / Step 2.5, on the current AI Studio image. Keeps the original at native
-        # resolution and extends to 3:4 (Bria borders by default). Result flows
-        # into the same Before/After + Add-to-Carousel display as an edit.
-        expand_row = tk.Frame(opts, bg=COLORS["bg_panel"])
-        expand_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 2))
+        # Generative Expand -> 3:4 (full-res): the same generative-expand feature
+        # as Step 0 / Step 2.5, on the current AI Studio image. Keeps the original
+        # at native resolution and extends to 3:4 (Bria borders by default).
+        # Wrapped in its OWN titled section so it reads as a distinct capability
+        # rather than a stray button that's easy to miss (user feedback). Result
+        # flows into the same Before/After + Add-to-Carousel display as an edit.
+        expand_lf = tk.LabelFrame(
+            opts,
+            text=" Generative Expand → 3:4 ",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 9, "bold"),
+            labelanchor="nw",
+        )
+        expand_lf.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 2))
+        tk.Label(
+            expand_lf,
+            text="Keeps this image at native resolution and grows the canvas "
+                 "to 3:4 (no crop).",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=300,
+        ).pack(fill=tk.X, padx=6, pady=(2, 4))
         self._expand_btn = ttk.Button(
-            expand_row,
-            text="\U0001f5bc Expand to 3:4",
-            style=TTK_BTN_SECONDARY,
+            expand_lf,
+            text="\U0001f5bc  Expand to 3:4",
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(
                 self._on_expand_3x4, key="aistudio_expand"
             ),
         )
-        self._expand_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        expand_pct_row = tk.Frame(opts, bg=COLORS["bg_panel"])
-        expand_pct_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4))
+        self._expand_btn.pack(fill=tk.X, padx=6, pady=(0, 4))
+        expand_pct_row = tk.Frame(expand_lf, bg=COLORS["bg_panel"])
+        expand_pct_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         tk.Label(
             expand_pct_row,
-            text="Zoom:",
+            text="Zoom out:",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9),
